@@ -30,8 +30,8 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isAuthPage =
-    request.nextUrl.pathname.startsWith('/auth/login') ||
-    request.nextUrl.pathname.startsWith('/auth/signup');
+    request.nextUrl.pathname.startsWith('/login') ||
+    request.nextUrl.pathname.startsWith('/signup');
 
   // Redirect unauthenticated users to login
   if (
@@ -41,7 +41,7 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname !== '/'
   ) {
     const url = request.nextUrl.clone();
-    url.pathname = '/auth/login';
+    url.pathname = '/login';
     return NextResponse.redirect(url);
   }
 
@@ -49,6 +49,18 @@ export async function middleware(request: NextRequest) {
   if (user && isAuthPage) {
     const url = request.nextUrl.clone();
     url.pathname = '/dashboard';
+    return NextResponse.redirect(url);
+  }
+
+  // Redirect old auth paths
+  if (request.nextUrl.pathname === '/auth/login') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/login';
+    return NextResponse.redirect(url);
+  }
+  if (request.nextUrl.pathname === '/auth/signup') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/signup';
     return NextResponse.redirect(url);
   }
 
