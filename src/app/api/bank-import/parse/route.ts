@@ -27,9 +27,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unsupported file type. Upload PDF or CSV.' }, { status: 400 });
     }
 
+    if (!transactions.length) {
+      return NextResponse.json(
+        { error: 'No transactions found. The file may be empty, scanned/image-only, or not an Attijariwafa Bank statement.' },
+        { status: 422 },
+      );
+    }
+
     return NextResponse.json({ transactions, count: transactions.length });
-  } catch (err) {
-    console.error('Parse error:', err);
-    return NextResponse.json({ error: 'Failed to parse file. Make sure it is a valid bank statement.' }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[bank-import/parse] error:', message);
+    return NextResponse.json({ error: `Parse failed: ${message}` }, { status: 500 });
   }
 }
