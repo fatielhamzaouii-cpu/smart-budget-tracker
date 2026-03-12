@@ -1,88 +1,96 @@
-import { classify, parseFrenchDate, parseMoroccanAmount, ParsedTransaction } from './classifier';
+import { classify, ParsedTransaction } from './classifier';
 
 /**
- * PDF parser for Attijariwafa Bank statements using pdf-parse v2.
+ * Parser for Attijariwafa Bank "Relevé de Compte" PDF statements.
  *
- * Transaction lines have the format:
- *   DD/MM/YYYY  DESCRIPTION               DEBIT    CREDIT    BALANCE
- * Amounts use French/Moroccan format: "5 000,00" (space = thousands, comma = decimal)
+ * ACTUAL LINE FORMAT (from the real PDF):
+ *   CODE  DD MM  DESCRIPTION  DD MM YYYY  AMOUNT
+ *
+ * Examples:
+ *   0016BK 04 02 VIR.WEB RECU DE MERIZAK 04 02 2026 4 500,00
+ *   0016MI 04 02 PAIEMENT CB 01/02/26 BIM MEKNE04 02 2026 379,60
+ *   0016C0 05 02 VIR INST RECU DE MLLE MSALLEK MANAL05 02 2026 2 500,00
+ *   0016F0 16 02 VIR INST EMIS VERS basma baba 16 02 2026 3 000,00
+ *
+ * Key observations:
+ * - Lines start with a bank CODE (e.g. 0016BK), NOT a date
+ * - The value date (DD MM YYYY) appears at the END of the line
+ * - Sometimes description is truncated and date is glued directly to last word
+ * - Amount uses Moroccan format: 4 500,00 (space = thousands, comma = decimal)
+ * - No separate debit/credit columns in text — infer from description
  */
 
-// Amount pattern: 1 234,56  or  1234,56  or  1234.56
-const AMT_RE = /\d{1,3}(?:[\s\u00a0]\d{3})*[,\.]\d{2}/g;
+// Matches a Moroccan-format amount at end of string: 4 500,00 or 100,00
+const AMOUNT_RE = /(\d{1,3}(?:[\s\u00a0]\d{3})*[,\.]\d{2})\s*$/;
 
-// Transaction line starts with DD/MM/YYYY followed by content
-const LINE_RE = /^(\d{2}\/\d{2}\/\d{4})\s+(.+)$/;
+// A transaction line starts with a bank code (4–8 uppercase+digit chars)
+// followed by two small numbers (operation date DD MM), then description, then value date + amount
+const LINE_RE = /^\s*([A-Z0-9]{4,8})\s+\d{1,2}\s+\d{2}\s+(.*?)\s*(\d{2})\s+(\d{2})\s+(\d{4})\s+(\d[\d\s]*[,\.]\d{2})\s*$/;
 
-// Keywords that indicate a line is a transaction
-const TX_KEYWORDS = /VIR|VIREMENT|PAIEMENT|GAB|CB|FACEBK|REMISE|CHEQUE|PRELEVEMENT|RECU|EMIS|RETRAIT|DEPOT|SALAIRE/i;
+// Lines to skip (headers, footers, totals)
+const SKIP_RE = /TOTAL MOUVEMENTS|SOLDE|PAGE\s+\d|CREDITEUR|DEBITEUR|LIBELLE|VALEUR|DEBIT$|^CREDIT$|CAPITAUX|Attijariwafa|banque|soci.t. anonyme|RELEVE|AGENCE|DEVISE|COMPTE|ARRETE|MOROCCO|DIRHAM|MEKNES|Casablanca|boulevard|ICE\s|RC\s|CNSS/i;
 
-function extractTransactionsFromText(text: string): ParsedTransaction[] {
-  const lines = text
+/**
+ * Parse date from DD MM YYYY parts → YYYY-MM-DD
+ */
+function toISODate(dd: string, mm: string, yyyy: string): string {
+  return `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+}
+
+/**
+ * Parse Moroccan amount string → number
+ * "4 500,00" → 4500.00,  "1 000,00" → 1000.00
+ */
+function parseAmount(raw: string): number {
+  return parseFloat(raw.replace(/[\s\u00a0]/g, '').replace(',', '.')) || 0;
+}
+
+/**
+ * Determine if a transaction is CREDIT (income) based on description.
+ * Everything else is DEBIT (expense).
+ */
+function isIncome(desc: string): boolean {
+  return /\bRECU\b|VERSEMENT\s*ESPECE|REMBOURSEMENT/i.test(desc);
+}
+
+export async function parsePDF(buffer: Buffer): Promise<ParsedTransaction[]> {
+  const { PDFParse } = await import('pdf-parse');
+  const parser = new PDFParse({ data: new Uint8Array(buffer) });
+  const result = await parser.getText();
+
+  const lines = result.text
     .split('\n')
     .map((l) => l.replace(/\r/g, '').trim())
-    .filter(Boolean);
+    .filter((l) => l.length > 0);
 
   const transactions: ParsedTransaction[] = [];
 
   for (const line of lines) {
-    // Must start with a date
+    // Skip headers, footers, totals
+    if (SKIP_RE.test(line)) continue;
+
     const match = line.match(LINE_RE);
     if (!match) continue;
 
-    const rawDate = match[1];
-    const rest    = match[2].trim();
+    // match[1] = CODE, match[2] = raw description, match[3] = DD, match[4] = MM, match[5] = YYYY, match[6] = amount
+    const rawDesc = match[2].trim().replace(/\s+/g, ' ');
+    const date    = toISODate(match[3], match[4], match[5]);
+    const amount  = parseAmount(match[6]);
 
-    // Must contain a transaction keyword
-    if (!TX_KEYWORDS.test(rest)) continue;
+    if (!rawDesc || amount <= 0) continue;
 
-    // Extract all amount tokens
-    const amountTokens = rest.match(AMT_RE) ?? [];
-    if (!amountTokens.length) continue;
+    // Clean up description: strip trailing digits that leaked from date concat
+    // e.g. "BIM MEKNE04" → "BIM MEKNE" (the 04 was start of date DD)
+    const cleanDesc = rawDesc.replace(/\d{2}$/, '').trim();
+    const description = cleanDesc || rawDesc;
 
-    // Description = everything before the first amount token
-    const firstAmtIdx = rest.indexOf(amountTokens[0]);
-    const rawDesc = rest.slice(0, firstAmtIdx).trim().replace(/\s+/g, ' ');
-    if (!rawDesc) continue;
-
-    const date = parseFrenchDate(rawDate);
-
-    // Determine debit/credit from amounts
-    let debit  = 0;
-    let credit = 0;
-
-    if (amountTokens.length === 1) {
-      const amt = parseMoroccanAmount(amountTokens[0]);
-      const isIncome = /RECU|REÇU|CREDIT|REMBOURSEMENT|SALAIRE|DEPOT/i.test(rawDesc);
-      if (isIncome) credit = amt; else debit = amt;
-    } else if (amountTokens.length === 2) {
-      const a = parseMoroccanAmount(amountTokens[0]);
-      const b = parseMoroccanAmount(amountTokens[1]);
-      // Balance is typically much larger than the transaction amount
-      if (b > a * 2) {
-        const isIncome = /RECU|REÇU|CREDIT|REMBOURSEMENT|SALAIRE|DEPOT/i.test(rawDesc);
-        if (isIncome) credit = a; else debit = a;
-      } else {
-        debit  = a;
-        credit = b;
-      }
-    } else {
-      // 3+ amounts: [debit, credit, balance]
-      debit  = parseMoroccanAmount(amountTokens[0]);
-      credit = parseMoroccanAmount(amountTokens[1]);
-    }
-
-    if (debit === 0 && credit === 0) continue;
-
-    const isCredit = credit > 0 && credit >= debit;
-    const amount   = isCredit ? credit : debit;
-
-    const { type, category, employee_name } = classify(rawDesc, amount, isCredit);
+    const credit = isIncome(description);
+    const { type, category, employee_name } = classify(description, amount, credit);
 
     transactions.push({
       date,
-      description:     rawDesc,
-      raw_description: rest,
+      description,
+      raw_description: rawDesc,
       amount,
       type,
       category,
@@ -92,14 +100,4 @@ function extractTransactionsFromText(text: string): ParsedTransaction[] {
   }
 
   return transactions;
-}
-
-export async function parsePDF(buffer: Buffer): Promise<ParsedTransaction[]> {
-  // pdf-parse v2 exports a PDFParse class (not a function like v1)
-  const { PDFParse } = await import('pdf-parse');
-
-  const parser = new PDFParse({ data: new Uint8Array(buffer) });
-  const result = await parser.getText();
-
-  return extractTransactionsFromText(result.text);
 }
