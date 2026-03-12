@@ -10,6 +10,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const supabase = createClient();
@@ -32,11 +33,22 @@ export default function SignupPage() {
     });
 
     if (error) {
-      setError(error.message);
+      if (error.message.includes('rate limit')) {
+        setError('Too many attempts. Please wait a few minutes and try again, or use a different email.');
+      } else {
+        setError(error.message);
+      }
       setLoading(false);
     } else {
-      router.push('/dashboard');
-      router.refresh();
+      // If email confirmation is enabled, session will be null
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        router.push('/dashboard');
+        router.refresh();
+      } else {
+        setSuccess('Account created! Please check your email to confirm your account, then sign in.');
+        setLoading(false);
+      }
     }
   };
 
@@ -60,6 +72,12 @@ export default function SignupPage() {
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg mb-4 text-sm">
               {error}
+            </div>
+          )}
+
+          {success && (
+            <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg mb-4 text-sm">
+              {success}
             </div>
           )}
 

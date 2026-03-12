@@ -396,3 +396,78 @@ CREATE TRIGGER update_investments_updated_at
 CREATE TRIGGER update_budgets_updated_at
   BEFORE UPDATE ON public.budgets
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+-- ============================================
+-- 12. TRANSACTIONS TABLE (Bank Import Log)
+-- ============================================
+CREATE TABLE public.transactions (
+  id               UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id          UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  date             DATE NOT NULL,
+  description      TEXT NOT NULL,
+  raw_description  TEXT,
+  amount           DECIMAL(12,2) NOT NULL CHECK (amount > 0),
+  type             TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  category         TEXT,
+  employee_name    TEXT,
+  source           TEXT DEFAULT 'bank_import',
+  created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_transactions_user_id ON public.transactions(user_id);
+CREATE INDEX idx_transactions_date    ON public.transactions(date);
+
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own transactions"
+  ON public.transactions FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create own transactions"
+  ON public.transactions FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own transactions"
+  ON public.transactions FOR DELETE USING (auth.uid() = user_id);
+
+-- ============================================
+-- 13. EMPLOYEES TABLE
+-- ============================================
+CREATE TABLE public.employees (
+  id         UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id    UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  name       TEXT NOT NULL,
+  role       TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_employees_user_id ON public.employees(user_id);
+
+ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own employees"
+  ON public.employees FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create own employees"
+  ON public.employees FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own employees"
+  ON public.employees FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own employees"
+  ON public.employees FOR DELETE USING (auth.uid() = user_id);
+
+-- Auto-insert default employees when a new user signs up
+CREATE OR REPLACE FUNCTION public.create_default_employees()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.employees (user_id, name, role) VALUES
+    (NEW.id, 'basma baba',        'Employee'),
+    (NEW.id, 'imane elhamzaoui',  'Employee'),
+    (NEW.id, 'ilias hsain',       'Employee'),
+    (NEW.id, 'oussama',           'Employee');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE TRIGGER on_user_create_employees
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.create_default_employees();
