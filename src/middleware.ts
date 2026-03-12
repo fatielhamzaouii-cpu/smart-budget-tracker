@@ -33,13 +33,17 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname.startsWith('/login') ||
     request.nextUrl.pathname.startsWith('/signup');
 
+  const isRoot = request.nextUrl.pathname === '/';
+
+  // Always redirect root: authenticated → dashboard, unauthenticated → login
+  if (isRoot) {
+    const url = request.nextUrl.clone();
+    url.pathname = user ? '/dashboard' : '/login';
+    return NextResponse.redirect(url);
+  }
+
   // Redirect unauthenticated users to login
-  if (
-    !user &&
-    !isAuthPage &&
-    !request.nextUrl.pathname.startsWith('/auth/callback') &&
-    request.nextUrl.pathname !== '/'
-  ) {
+  if (!user && !isAuthPage && !request.nextUrl.pathname.startsWith('/auth/callback')) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);
