@@ -1,9 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Next.js 16 uses Turbopack by default.
-  // Empty turbopack config silences the "webpack config ignored" warning.
   turbopack: {},
+
+  // Do NOT bundle pdf-parse or pdfjs-dist on the server.
+  // They use dynamic relative imports (pdf.worker.mjs) that break when bundled
+  // into Next.js chunks. Keeping them external lets Node.js load them directly
+  // from node_modules where relative paths work correctly.
+  serverExternalPackages: ["pdf-parse", "pdfjs-dist"],
 };
 
 export default nextConfig;
